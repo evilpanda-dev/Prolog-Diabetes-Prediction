@@ -1,4 +1,4 @@
-from csv import reader
+import time
 from problog.program import PrologString
 from problog import get_evaluatable
 from problog.logic import Term
@@ -7,79 +7,77 @@ import pickle
 import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from sklearn.metrics import accuracy_score, recall_score, precision_score, f1_score, confusion_matrix
 from patient import Patient
+import pandas as pd
+from sklearn.model_selection import train_test_split
 
 app = Flask(__name__)
 CORS(app)
 
 
-def readDatasetFile():
+def readDatasetFile(dataset):
     global set_diabetes
     global evidence
     global trained_model
 
-    with open('diabetes_prediction_dataset.csv', 'r') as read_obj:
-        csv_reader = reader(read_obj)
-        header = next(csv_reader)
+    for index, row in data.iterrows():
+        evidence_list = []
+        if int(row[8]) == 1:
+            final_model = "t(_)::diabetic:-"
+        else:
+            final_model = "t(_)::healthy:-"
 
-        if header != None:
-            for row in csv_reader:
-                evidence_list = []
-                if int(row[8]) == 1:
-                    final_model = "t(_)::diabetic:-"
-                else:
-                    final_model = "t(_)::healthy:-"
+        # Gender column
+        is_male = row[0].lower() == 'male'
+        evidence_list.append((Term("male"), is_male, None))
+        final_model += "male," if is_male else "\+male,"
 
-                # Gender column
-                is_male = row[0].lower() == 'male'
-                evidence_list.append((Term("male"), is_male, None))
-                final_model += "male," if is_male else "\+male,"
+        # Age column
+        age_user = int(float(row[1])) if row[1] != '' else 0
+        is_young = age_user < 50
+        evidence_list.append((Term("young"), is_young, None))
+        final_model += "young," if is_young else "\+young,"
 
-                # Age column
-                age_user = int(float(row[1])) if row[1] != '' else 0
-                is_young = age_user < 50
-                evidence_list.append((Term("young"), is_young, None))
-                final_model += "young," if is_young else "\+young,"
+        # Hypertension
+        is_hypertensive = row[2] == 1
+        evidence_list.append((Term("hypertension"), is_hypertensive, None))
+        final_model += "hypertension," if is_hypertensive else "\+hypertension,"
 
-                # Hypertension
-                is_hypertensive = row[2] == '1'
-                evidence_list.append((Term("hypertension"), is_hypertensive, None))
-                final_model += "hypertension," if is_hypertensive else "\+hypertension,"
+        # # Heart disease
+        is_heart_disease = row[3] == 1
+        evidence_list.append((Term("heartDisease"), is_heart_disease, None))
+        final_model += "heartDisease," if is_heart_disease else "\+heartDisease,"
 
-                # # Heart disease
-                is_heart_disease = row[3] == '1'
-                evidence_list.append((Term("heartDisease"), is_heart_disease, None))
-                final_model += "heartDisease," if is_heart_disease else "\+heartDisease,"
+        # Smoking History
+        smoking_status = row[4].lower()
+        status_terms = ["never", "no info", "former", "current", "not current", "ever"]
+        if smoking_status:
+            for status_term in status_terms:
+                evidence_list, final_model = update_evidence_and_data(smoking_status, status_term,
+                                                                      evidence_list, final_model)
 
-                # Smoking History
-                smoking_status = row[4].lower()
-                status_terms = ["never", "no info", "former", "current", "not current", "ever"]
-                if smoking_status:
-                    for status_term in status_terms:
-                        evidence_list, final_model = update_evidence_and_data(smoking_status, status_term,
-                                                                              evidence_list, final_model)
+        # BMI
+        bmi_user = float(row[5]) if row[5] != '' else 0
+        is_normal_bmi = bmi_user < 25
+        evidence_list.append((Term("normalBMI"), is_normal_bmi, None))
+        final_model += "normalBMI," if is_normal_bmi else "\+normalBMI,"
 
-                # BMI
-                bmi_user = float(row[5]) if row[5] != '' else 0
-                is_normal_bmi = bmi_user < 25
-                evidence_list.append((Term("normalBMI"), is_normal_bmi, None))
-                final_model += "normalBMI," if is_normal_bmi else "\+normalBMI,"
+        # HbA1c level
+        hba1c_user = float(row[6]) if row[6] != '' else 0
+        is_normal_hba1c = hba1c_user < 5.7
+        evidence_list.append((Term("normalHbA1c"), is_normal_hba1c, None))
+        final_model += "normalHbA1c," if is_normal_hba1c else "\+normalHbA1c,"
 
-                # HbA1c level
-                hba1c_user = float(row[6]) if row[6] != '' else 0
-                is_normal_hba1c = hba1c_user < 5.7
-                evidence_list.append((Term("normalHbA1c"), is_normal_hba1c, None))
-                final_model += "normalHbA1c," if is_normal_hba1c else "\+normalHbA1c,"
+        # Blood Glucose Level
+        glucose_user = int(row[7]) if row[7] != '' else 0
+        is_normal_glucose = glucose_user < 140
+        evidence_list.append((Term("normalGlucose"), is_normal_glucose, None))
+        final_model += "normalGlucose." if is_normal_glucose else "\+normalGlucose."
 
-                # Blood Glucose Level
-                glucose_user = int(row[7]) if row[7] != '' else 0
-                is_normal_glucose = glucose_user < 140
-                evidence_list.append((Term("normalGlucose"), is_normal_glucose, None))
-                final_model += "normalGlucose." if is_normal_glucose else "\+normalGlucose."
-
-                final_model = final_model.replace(",.", ".")
-                set_diabetes.add(final_model)
-                evidence.append(evidence_list)
+        final_model = final_model.replace(",.", ".")
+        set_diabetes.add(final_model)
+        evidence.append(evidence_list)
 
 
 def clickMethod(person):
@@ -175,6 +173,20 @@ def update_evidence_and_data(smoking_status, status_term, evidence_list, final_m
     return evidence_list, final_model
 
 
+def get_model_classification(person):
+    prediction = clickMethod(person)
+    # Now we extract the float values from the string
+    lines = prediction.split("\n")
+    diabetic_prob = float(lines[0].split(":")[1].strip())
+    healthy_prob = float(lines[1].split(":")[1].strip())
+
+    return 1 if diabetic_prob >= 0.5 and healthy_prob < 0.5 else 0
+
+
+def get_actual_classification(row):
+    return int(row[8])
+
+
 # if __name__ == "__main__":
 model_path = os.path.join(os.getcwd(), 'trained_model.pkl')
 
@@ -194,8 +206,13 @@ else:
     set_diabetes = set()
     evidence = list()
 
+    # Load the dataset
+    data = pd.read_csv('diabetes_prediction_dataset.csv')
+    # Split the dataset into training and testing
+    train_data, test_data = train_test_split(data, test_size=0.3, random_state=42)
+
     # Function that reads from csv and creates the training model
-    readDatasetFile()
+    readDatasetFile(train_data)
 
     term_list = list(set_diabetes)
     term_list.sort()
@@ -234,13 +251,44 @@ else:
         pickle.dump(trained_model, f)
     print("Model created")
 
+    # Convert test_data into a list of Patient objects
+    test_patients = [Patient(row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]) for row in
+                     test_data.itertuples(index=False)]
+
+    # Get the actual and predicted classifications
+    actual_classifications = [get_actual_classification(row) for row in test_data.itertuples(index=False)]
+    predicted_classifications = [get_model_classification(patient) for patient in test_patients]
+    # Get the time it takes to compute the metrics
+    start_time = time.time()
+
+    # Calculate the metrics
+    acc = accuracy_score(actual_classifications, predicted_classifications)
+    prec = precision_score(actual_classifications, predicted_classifications)
+    rec = recall_score(actual_classifications, predicted_classifications)
+    f1 = f1_score(actual_classifications, predicted_classifications)
+
+
+    # Write the metrics to a file
+    with open('results.txt', 'w') as f:
+        f.write(f'Accuracy: {acc}\n')
+        f.write(f'Precision: {prec}\n')
+        f.write(f'Recall: {rec}\n')
+        f.write(f'F1 Score: {f1}\n')
+
+        # Compute and write the confusion matrix
+        cm = confusion_matrix(actual_classifications, predicted_classifications)
+        f.write(f'Confusion Matrix: \n{cm}\n')
+
+        end_time = time.time()
+        execution_time = (end_time - start_time) / 60.0
+        f.write(f'Execution time: {execution_time} minutes\n')
 
 @app.route('/diabetes-prediction', methods=['POST'])
 def predict_diabetes():
-    data = request.get_json(force=True)  # forcing the interpretation of request data as JSON
+    jsonData = request.get_json(force=True)  # forcing the interpretation of request data as JSON
 
-    patient = Patient(data['gender'], int(data['age']), int(data['hypertension']), int(data['heart_disease']),
-                      data['smoking_status'], float(data['bmi']), float(data['hba1c']), int(data['glucose']))
+    patient = Patient(jsonData['gender'], int(jsonData['age']), int(jsonData['hypertension']), int(jsonData['heart_disease']),
+                      jsonData['smoking_status'], float(jsonData['bmi']), float(jsonData['hba1c']), int(jsonData['glucose']))
 
     prediction = clickMethod(patient)  # prediction method
 
